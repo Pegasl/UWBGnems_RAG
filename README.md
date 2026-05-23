@@ -1,6 +1,6 @@
 # MEMS&NEMS RAG
 
-一个面向论文问答的多模态 RAG 项目。系统会读取 MinerU 从 PDF 解析出的 `*_content_list.json` 中间文件，抽取论文文本和带 caption 的图片，使用本地 `qwen3_vl_embedding` 生成文本/图片向量，使用本地 `qwen3_vl_reranker` 对检索结果重排，最后调用 OpenAI 兼容接口生成带来源引用的回答。
+一个面向论文问答的多模态 RAG 项目。使用由 LMStudio 或者其他部署方案本地部署的问答模型，以及基于 HuggingFace transformer 部署的Embedding 和 Reranker 模型。系统会读取 MinerU 从 PDF 解析出的 `*_content_list.json` 中间文件，抽取论文文本和带 caption 的图片，使用本地 `qwen3_vl_embedding` 生成文本/图片向量，使用本地 `qwen3_vl_reranker` 对检索结果重排，最后调用 OpenAI 兼容接口生成带来源引用的回答。
 
 ## 功能
 
