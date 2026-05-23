@@ -1,0 +1,166 @@
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MEMS&NEMS RAG 登录</title>
+  <style>
+    :root {
+      --near-black: #141413;
+      --parchment: #f5f4ed;
+      --ivory: #faf9f5;
+      --sand: #e8e6dc;
+      --border: #e8e6dc;
+      --muted: #5e5d59;
+      --terracotta: #c96442;
+      --focus: #3898ec;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--parchment);
+      color: var(--near-black);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    main {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .login {
+      width: min(440px, 100%);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 30px;
+      background: var(--ivory);
+      box-shadow: rgba(20, 20, 19, 0.06) 0 8px 24px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 34px;
+      font-weight: 500;
+      line-height: 1.15;
+    }
+
+    p {
+      margin: 0 0 24px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    input {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 12px;
+      background: #fff;
+      color: var(--near-black);
+      font: inherit;
+      outline: 0;
+    }
+
+    input:focus {
+      border-color: var(--focus);
+      box-shadow: 0 0 0 1px var(--focus);
+    }
+
+    button {
+      width: 100%;
+      min-height: 44px;
+      margin-top: 14px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--terracotta);
+      color: var(--ivory);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .hint {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .error {
+      min-height: 20px;
+      margin-top: 12px;
+      color: #b53333;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    code {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.1em 0.35em;
+      background: var(--sand);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <form class="login" id="loginForm">
+      <h1>进入 MEMS&NEMS RAG</h1>
+      <p>请输入服务器 `.env` 里的访问密钥。</p>
+      <label for="apiKey">API Key</label>
+      <input id="apiKey" name="apiKey" type="password" autocomplete="current-password" autofocus>
+      <button type="submit">验证并进入</button>
+      <div class="error" id="error" role="alert"></div>
+      <div class="hint">使用 <code>RAG_WEB_API_KEY</code> 配置网页访问密钥。</div>
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById("loginForm");
+    const input = document.getElementById("apiKey");
+    const errorBox = document.getElementById("error");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      errorBox.textContent = "";
+      const apiKey = input.value.trim();
+      if (!apiKey) {
+        errorBox.textContent = "请输入 API Key。";
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: apiKey })
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || "验证失败。");
+        }
+        window.location.replace("/");
+      } catch (error) {
+        errorBox.textContent = error.message;
+      }
+    });
+  </script>
+</body>
+</html>
