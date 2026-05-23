@@ -46,7 +46,7 @@ def load_project_env() -> None:
 load_project_env()
 
 
-MODEL_NAME_27B = os.getenv("RAG_LLM_MODEL", "qwen3.5-27b")
+MODEL_NAME = os.getenv("RAG_LLM_MODEL")
 
 # ================= 路径配置 =================
 JSON_DIR = Path(os.getenv("RAG_JSON_DIR")).expanduser()
@@ -407,7 +407,7 @@ class RAGPipeline:
     ) -> Generator[str, None, None]:
         messages = self.build_llm_messages(question, txt_results, img_results, history=history)
         response = self.client.chat.completions.create(
-            model=MODEL_NAME_27B,
+            model=MODEL_NAME,
             messages=messages,
             stream=True,
         )
@@ -506,12 +506,6 @@ class DemoRAGPipeline:
 当前网页服务已经启动，历史对话、流式输出、Markdown 和 LaTeX 渲染都可以直接测试。实际 RAG 模型未加载的原因是：
 
 `{reason}`
-
-一个数学公式示例：
-
-$$
-\\operatorname{{score}}(q, d)=\\frac{{q \\cdot d}}{{\\lVert q\\rVert\\lVert d\\rVert}}
-$$
 
 | 能力 | 状态 |
 | --- | --- |
