@@ -626,6 +626,76 @@
       }
     }
 
+    .rewrite-card {
+      display: grid;
+      gap: 10px;
+      width: min(680px, 100%);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--ivory);
+      box-shadow: var(--shadow);
+    }
+
+    .rewrite-title {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .rewrite-original,
+    .rewrite-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .rewrite-original strong {
+      color: var(--text);
+    }
+
+    .rewrite-textarea {
+      width: 100%;
+      min-height: 96px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      color: var(--text);
+      line-height: 1.5;
+      outline: 0;
+    }
+
+    .rewrite-textarea:focus {
+      border-color: var(--blue-focus);
+      box-shadow: 0 0 0 1px var(--blue-focus);
+    }
+
+    .rewrite-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .rewrite-action {
+      min-height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 12px;
+      background: var(--ivory);
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .rewrite-action.primary {
+      border-color: var(--dark);
+      background: var(--dark);
+      color: var(--ivory);
+    }
+
     .composer-wrap {
       padding: 14px 28px 24px;
       background: var(--parchment);
@@ -847,7 +917,8 @@
       conversations: [],
       activeConversationId: null,
       activeConversation: null,
-      streaming: false
+      streaming: false,
+      awaitingConfirmation: false
     };
 
     const els = {
@@ -886,6 +957,15 @@
 
     function setStatus(message) {
       els.statusPill.textContent = message || "就绪";
+    }
+
+    function isBusy() {
+      return state.streaming || state.awaitingConfirmation;
+    }
+
+    function setComposerDisabled(disabled) {
+      els.sendButton.disabled = disabled;
+      els.questionInput.disabled = disabled;
     }
 
     function formatTime(value) {
@@ -1015,6 +1095,10 @@
     }
 
     async function loadConversation(id) {
+      if (isBusy()) {
+        showToast("请先完成当前问题。");
+        return;
+      }
       state.activeConversation = await requestJson(`/api/conversations/${id}`);
       state.activeConversationId = state.activeConversation.id;
       renderHistory();
@@ -1167,7 +1251,7 @@
       return details;
     }
 
-    function createThinkingElement() {
+    function createThinkingElement(text = "正在检索上下文...") {
       const message = document.createElement("article");
       message.className = "message assistant";
       message.innerHTML = `
@@ -1176,12 +1260,83 @@
           <div class="message-meta">NEMS&MEMS RAG</div>
           <div class="thinking-card">
             <span class="thinking-bars"><span></span><span></span><span></span></span>
-            <span class="thinking-text">正在检索上下文...</span>
+            <span class="thinking-text">${escapeHtml(text)}</span>
           </div>
           <div class="markdown-body" style="display:none"></div>
         </div>
       `;
       return message;
+    }
+
+    function createRewriteConfirmElement(question, rewrittenQuestion, warning = "") {
+      const message = document.createElement("article");
+      message.className = "message assistant";
+
+      const avatar = document.createElement("div");
+      avatar.className = "avatar";
+      avatar.textContent = "R";
+
+      const body = document.createElement("div");
+      body.className = "message-body";
+
+      const meta = document.createElement("div");
+      meta.className = "message-meta";
+      meta.textContent = "NEMS&MEMS RAG";
+      body.appendChild(meta);
+
+      const card = document.createElement("div");
+      card.className = "rewrite-card";
+
+      const title = document.createElement("div");
+      title.className = "rewrite-title";
+      title.textContent = "确认用于检索的问题";
+      card.appendChild(title);
+
+      const original = document.createElement("div");
+      original.className = "rewrite-original";
+      original.innerHTML = `<strong>原问题：</strong>${escapeHtml(question)}`;
+      card.appendChild(original);
+
+      const textarea = document.createElement("textarea");
+      textarea.className = "rewrite-textarea";
+      textarea.value = rewrittenQuestion || question;
+      card.appendChild(textarea);
+
+      if (warning) {
+        const note = document.createElement("div");
+        note.className = "rewrite-note";
+        note.textContent = warning;
+        card.appendChild(note);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "rewrite-actions";
+
+      const cancelButton = document.createElement("button");
+      cancelButton.className = "rewrite-action";
+      cancelButton.type = "button";
+      cancelButton.textContent = "取消";
+
+      const originalButton = document.createElement("button");
+      originalButton.className = "rewrite-action";
+      originalButton.type = "button";
+      originalButton.textContent = "使用原问题";
+
+      const confirmButton = document.createElement("button");
+      confirmButton.className = "rewrite-action primary";
+      confirmButton.type = "button";
+      confirmButton.textContent = "确认并检索";
+
+      actions.appendChild(cancelButton);
+      actions.appendChild(originalButton);
+      actions.appendChild(confirmButton);
+      card.appendChild(actions);
+
+      body.appendChild(card);
+      message.appendChild(avatar);
+      message.appendChild(body);
+
+      return { message, textarea, confirmButton, originalButton, cancelButton };
     }
 
     function scrollChatToBottom() {
@@ -1190,6 +1345,10 @@
     }
 
     function startNewChat() {
+      if (isBusy()) {
+        showToast("请先完成当前问题。");
+        return;
+      }
       state.activeConversationId = null;
       state.activeConversation = null;
       renderHistory();
@@ -1199,7 +1358,7 @@
     }
 
     async function deleteConversation(id) {
-      if (state.streaming) return;
+      if (isBusy()) return;
       await fetch(`/api/conversations/${id}`, { method: "DELETE" });
       if (state.activeConversationId === id) {
         state.activeConversationId = null;
@@ -1210,7 +1369,7 @@
     }
 
     async function clearAllConversations() {
-      if (state.streaming || !state.conversations.length) return;
+      if (isBusy() || !state.conversations.length) return;
       if (!window.confirm("删除所有历史对话？")) return;
       await fetch("/api/conversations", { method: "DELETE" });
       state.activeConversationId = null;
@@ -1220,8 +1379,8 @@
     }
 
     async function indexDocuments(mode = "update") {
-      if (state.streaming) {
-        showToast("回答还在生成，稍后再重构或更新向量库。");
+      if (isBusy()) {
+        showToast("请先完成当前问题，再重构或更新向量库。");
         return;
       }
 
@@ -1276,17 +1435,126 @@
       }
     }
 
-    async function sendQuestion(question) {
+    function resetPendingQuestion(userMessage, rewriteMessage) {
+      state.awaitingConfirmation = false;
+      state.streaming = false;
+      setComposerDisabled(false);
+      setStatus("就绪");
+      if (rewriteMessage) rewriteMessage.remove();
+      if (userMessage) userMessage.remove();
+      if (!state.activeConversation?.messages?.length) {
+        renderEmptyState();
+      }
+      els.questionInput.focus();
+    }
+
+    async function prepareQuestion(question) {
       state.streaming = true;
-      els.sendButton.disabled = true;
-      els.questionInput.disabled = true;
-      setStatus("思考中");
+      state.awaitingConfirmation = false;
+      setComposerDisabled(true);
+      setStatus("正在优化问题");
 
       if (!state.activeConversation || !state.activeConversation.messages?.length) {
         els.chatInner.innerHTML = "";
       }
 
-      els.chatInner.appendChild(createMessageElement("user", question));
+      const userMessage = createMessageElement("user", question);
+      els.chatInner.appendChild(userMessage);
+      const rewriteLoading = createThinkingElement("正在优化检索问题...");
+      els.chatInner.appendChild(rewriteLoading);
+      scrollChatToBottom();
+
+      try {
+        const rewrite = await requestJson("/api/rewrite-question", {
+          method: "POST",
+          body: JSON.stringify({ conversation_id: state.activeConversationId, question })
+        });
+
+        rewriteLoading.remove();
+        const confirm = createRewriteConfirmElement(
+          question,
+          rewrite.rewritten_question || question,
+          rewrite.warning || ""
+        );
+        els.chatInner.appendChild(confirm.message);
+        state.awaitingConfirmation = true;
+        setStatus("等待确认");
+        scrollChatToBottom();
+        confirm.textarea.focus();
+        confirm.textarea.select();
+
+        const disableConfirmButtons = () => {
+          confirm.confirmButton.disabled = true;
+          confirm.originalButton.disabled = true;
+          confirm.cancelButton.disabled = true;
+          confirm.textarea.disabled = true;
+        };
+
+        confirm.confirmButton.addEventListener("click", () => {
+          const retrievalQuestion = confirm.textarea.value.trim() || question;
+          disableConfirmButtons();
+          state.awaitingConfirmation = false;
+          confirm.message.remove();
+          sendConfirmedQuestion(question, retrievalQuestion);
+        });
+
+        confirm.originalButton.addEventListener("click", () => {
+          disableConfirmButtons();
+          state.awaitingConfirmation = false;
+          confirm.message.remove();
+          sendConfirmedQuestion(question, question);
+        });
+
+        confirm.cancelButton.addEventListener("click", () => {
+          resetPendingQuestion(userMessage, confirm.message);
+        });
+      } catch (error) {
+        rewriteLoading.remove();
+        const confirm = createRewriteConfirmElement(
+          question,
+          question,
+          `问题改写失败，已保留原问题：${error.message}`
+        );
+        els.chatInner.appendChild(confirm.message);
+        state.awaitingConfirmation = true;
+        setStatus("等待确认");
+        showToast(error.message);
+        scrollChatToBottom();
+
+        const disableConfirmButtons = () => {
+          confirm.confirmButton.disabled = true;
+          confirm.originalButton.disabled = true;
+          confirm.cancelButton.disabled = true;
+          confirm.textarea.disabled = true;
+        };
+
+        confirm.confirmButton.addEventListener("click", () => {
+          const retrievalQuestion = confirm.textarea.value.trim() || question;
+          disableConfirmButtons();
+          state.awaitingConfirmation = false;
+          confirm.message.remove();
+          sendConfirmedQuestion(question, retrievalQuestion);
+        });
+
+        confirm.originalButton.addEventListener("click", () => {
+          disableConfirmButtons();
+          state.awaitingConfirmation = false;
+          confirm.message.remove();
+          sendConfirmedQuestion(question, question);
+        });
+
+        confirm.cancelButton.addEventListener("click", () => {
+          resetPendingQuestion(userMessage, confirm.message);
+        });
+      }
+    }
+
+    async function sendConfirmedQuestion(question, retrievalQuestion) {
+      state.streaming = true;
+      state.awaitingConfirmation = false;
+      setComposerDisabled(true);
+      setStatus("检索中");
+
       const thinking = createThinkingElement();
       els.chatInner.appendChild(thinking);
       const thinkingText = thinking.querySelector(".thinking-text");
@@ -1300,7 +1568,11 @@
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversation_id: state.activeConversationId, question })
+          body: JSON.stringify({
+            conversation_id: state.activeConversationId,
+            question,
+            retrieval_question: retrievalQuestion || question
+          })
         });
         if (!response.ok || !response.body) {
           throw new Error(await response.text() || response.statusText);
@@ -1359,8 +1631,8 @@
         setStatus("出错");
       } finally {
         state.streaming = false;
-        els.sendButton.disabled = false;
-        els.questionInput.disabled = false;
+        state.awaitingConfirmation = false;
+        setComposerDisabled(false);
         els.questionInput.focus();
       }
     }
@@ -1376,11 +1648,11 @@
 
     els.composer.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (state.streaming) return;
+      if (isBusy()) return;
       const question = els.questionInput.value.trim();
       if (!question) return;
       els.questionInput.value = "";
-      sendQuestion(question);
+      prepareQuestion(question);
     });
 
     els.questionInput.addEventListener("keydown", (event) => {

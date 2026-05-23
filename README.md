@@ -121,6 +121,9 @@ RAG_RERANKER_DEVICE=cuda:1
 OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 RAG_LLM_MODEL=your_multimodal_llm_model
+# 可选：不设置则复用 RAG_LLM_MODEL
+# RAG_QUESTION_REWRITE_MODEL=your_question_rewrite_model
+RAG_QUESTION_REWRITE_TIMEOUT_SECONDS=30
 
 # Web 服务
 RAG_WEB_HOST=127.0.0.1
@@ -136,6 +139,7 @@ RAG_MAX_CONTEXT_MESSAGES=8
 - `RAG_EMBEDDING_MODEL_PATH` 和 `RAG_RERANKER_MODEL_PATH` 必须指向已经下载好的本地模型目录。
 - 如果只在本机使用，`RAG_WEB_HOST=127.0.0.1` 即可；需要局域网访问时可用启动参数 `--lan`。
 - `RAG_WEB_API_KEY` 用于网页登录验证；不设置则网页不启用访问验证。
+- `RAG_QUESTION_REWRITE_MODEL` 用于确认前的问题改写；不设置时默认复用 `RAG_LLM_MODEL`。`RAG_QUESTION_REWRITE_TIMEOUT_SECONDS` 控制改写请求超时时间。
 - 代码也兼容旧变量名 `API_KEY` / `API_URL`，但推荐使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL`。
 - 如果希望真实 RAG 初始化失败时仍进入前端 Demo 模式，可设置 `RAG_FALLBACK_DEMO=1`。
 

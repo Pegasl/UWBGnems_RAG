@@ -47,6 +47,8 @@ load_project_env()
 
 
 MODEL_NAME = os.getenv("RAG_LLM_MODEL")
+QUESTION_REWRITE_MODEL = os.getenv("RAG_QUESTION_REWRITE_MODEL") or MODEL_NAME or ""
+QUESTION_REWRITE_TIMEOUT_SECONDS = float(os.getenv("RAG_QUESTION_REWRITE_TIMEOUT_SECONDS", "30"))
 
 # ================= 路径配置 =================
 JSON_DIR = Path(os.getenv("RAG_JSON_DIR")).expanduser()
@@ -97,6 +99,20 @@ def import_rag_dependencies() -> SimpleNamespace:
     )
 
 
+def build_openai_client(OpenAIClass: Any | None = None) -> Any:
+    if OpenAIClass is None:
+        try:
+            from openai import OpenAI as OpenAIClass
+        except Exception as exc:
+            raise RuntimeError(f"缺少 OpenAI SDK，无法调用 LLM：{exc}") from exc
+
+    api_key = os.getenv("OPENAI_API_KEY", os.getenv("API_KEY"))
+    base_url = os.getenv("OPENAI_BASE_URL", os.getenv("API_URL"))
+    if not api_key:
+        raise RuntimeError("未设置 OPENAI_API_KEY 或 API_KEY，无法调用 LLM。")
+    return OpenAIClass(api_key=api_key, base_url=base_url)
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -106,6 +122,83 @@ def compact_text(value: str, limit: int = 56) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1].rstrip() + "..."
+
+
+def recent_history_for_rewrite(history: Iterable[dict[str, Any]] | None) -> str:
+    lines: list[str] = []
+    for message in list(history or [])[-MAX_CONTEXT_MESSAGES:]:
+        role = message.get("role")
+        content = compact_text(str(message.get("content", "")), 900)
+        if role in {"user", "assistant"} and content:
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"{label}: {content}")
+    return "\n".join(lines)
+
+
+def parse_rewrite_response(content: str, fallback: str) -> tuple[str, str]:
+    raw = str(content or "").strip()
+    if not raw:
+        return fallback, ""
+
+    json_start = raw.find("{")
+    json_end = raw.rfind("}")
+    if json_start != -1 and json_end != -1 and json_end > json_start:
+        try:
+            data = json.loads(raw[json_start : json_end + 1])
+            rewritten = str(data.get("rewritten_question") or data.get("question") or "").strip()
+            rationale = str(data.get("rationale") or "").strip()
+            if rewritten:
+                return rewritten, rationale
+        except Exception:
+            pass
+
+    return raw.strip('"').strip(), ""
+
+
+def rewrite_question_for_retrieval(
+    question: str,
+    history: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    question = question.strip()
+    if not question:
+        raise ValueError("问题不能为空。")
+    if not QUESTION_REWRITE_MODEL:
+        raise RuntimeError("未设置 RAG_LLM_MODEL 或 RAG_QUESTION_REWRITE_MODEL，无法改写问题。")
+
+    client = build_openai_client()
+    history_text = recent_history_for_rewrite(history)
+    user_prompt = (
+        f"原始问题：\n{question}\n\n"
+        f"最近对话历史：\n{history_text or '无'}\n\n"
+        "请输出 JSON。"
+    )
+    response = client.chat.completions.create(
+        model=QUESTION_REWRITE_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你是论文 RAG 系统的检索问题改写器。你的任务是把用户问题改写成更适合向量检索"
+                    "和重排的查询，不回答问题，不编造论文中未出现的限定条件。保留用户原意，补全省略"
+                    "指代，加入必要的中英文术语、缩写、公式名、器件名或方法名；如果原问题已经清晰，"
+                    "可以只做轻微规范化。只返回 JSON，格式为 "
+                    "{\"rewritten_question\":\"...\", \"rationale\":\"...\"}。"
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.2,
+        timeout=QUESTION_REWRITE_TIMEOUT_SECONDS,
+    )
+    content = response.choices[0].message.content if response.choices else ""
+    rewritten, rationale = parse_rewrite_response(content, question)
+    rewritten = " ".join(rewritten.split()) or question
+    return {
+        "question": question,
+        "rewritten_question": rewritten,
+        "changed": rewritten != question,
+        "rationale": rationale,
+    }
 
 
 def is_lan_candidate(ip: str) -> bool:
@@ -189,11 +282,7 @@ class RAGPipeline:
         self.chroma_client = deps.chromadb.PersistentClient(path=chroma_path)
         self._attach_collections()
 
-        api_key = os.getenv("OPENAI_API_KEY", os.getenv("API_KEY"))
-        base_url = os.getenv("OPENAI_BASE_URL", os.getenv("API_URL"))
-        if not api_key:
-            raise RuntimeError("未设置 OPENAI_API_KEY 或 API_KEY，无法调用 LLM。")
-        self.client = deps.OpenAI(api_key=api_key, base_url=base_url)
+        self.client = build_openai_client(deps.OpenAI)
 
     def _attach_collections(self) -> None:
         self.txt_collection = self.chroma_client.get_or_create_collection(
@@ -351,6 +440,7 @@ class RAGPipeline:
         txt_results: List[dict],
         img_results: List[dict],
         history: Iterable[dict[str, Any]] | None = None,
+        retrieval_question: str | None = None,
     ) -> list[dict[str, Any]]:
         context_text = ""
         for res in txt_results:
@@ -393,7 +483,15 @@ class RAGPipeline:
             if role in {"user", "assistant"} and content:
                 messages.append({"role": role, "content": content[:8000]})
 
-        user_content = [{"type": "text", "text": f"Question: {question}\n\nContext:\n{context_text}"}]
+        retrieval_question = (retrieval_question or question).strip()
+        question_block = f"Question: {question}"
+        if retrieval_question and retrieval_question != question:
+            question_block += (
+                "\nRetrieval-optimized question used to select the context "
+                f"(do not answer this instead of the user question): {retrieval_question}"
+            )
+
+        user_content = [{"type": "text", "text": f"{question_block}\n\nContext:\n{context_text}"}]
         user_content.extend(img_content_blocks)
         messages.append({"role": "user", "content": user_content})
         return messages
@@ -404,8 +502,15 @@ class RAGPipeline:
         txt_results: List[dict],
         img_results: List[dict],
         history: Iterable[dict[str, Any]] | None = None,
+        retrieval_question: str | None = None,
     ) -> Generator[str, None, None]:
-        messages = self.build_llm_messages(question, txt_results, img_results, history=history)
+        messages = self.build_llm_messages(
+            question,
+            txt_results,
+            img_results,
+            history=history,
+            retrieval_question=retrieval_question,
+        )
         response = self.client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
@@ -426,6 +531,7 @@ class RAGPipeline:
         txt_results: List[dict],
         img_results: List[dict],
         history: Iterable[dict[str, Any]] | None = None,
+        retrieval_question: str | None = None,
     ) -> str:
         print("\n\n")
 
@@ -447,7 +553,13 @@ class RAGPipeline:
         answer_parts: list[str] = []
 
         try:
-            for content in self.stream_llm_answer(question, txt_results, img_results, history=history):
+            for content in self.stream_llm_answer(
+                question,
+                txt_results,
+                img_results,
+                history=history,
+                retrieval_question=retrieval_question,
+            ):
                 if not content_started:
                     stop_event.set()
                     spinner_thread.join()
@@ -495,6 +607,7 @@ class DemoRAGPipeline:
         txt_results: List[dict],
         img_results: List[dict],
         history: Iterable[dict[str, Any]] | None = None,
+        retrieval_question: str | None = None,
     ) -> Generator[str, None, None]:
         reason = self.reason or "已启用 Demo 模式。"
         answer = f"""### Demo 回答
@@ -525,8 +638,17 @@ class DemoRAGPipeline:
         txt_results: List[dict],
         img_results: List[dict],
         history: Iterable[dict[str, Any]] | None = None,
+        retrieval_question: str | None = None,
     ) -> str:
-        answer = "".join(self.stream_llm_answer(question, txt_results, img_results, history=history))
+        answer = "".join(
+            self.stream_llm_answer(
+                question,
+                txt_results,
+                img_results,
+                history=history,
+                retrieval_question=retrieval_question,
+            )
+        )
         print(answer)
         return answer
 
@@ -999,6 +1121,10 @@ class RAGWebHandler(BaseHTTPRequestHandler):
             self._send_json(self.store.create_conversation(title=title), status=201)
             return
 
+        if path == "/api/rewrite-question":
+            self._handle_rewrite_question()
+            return
+
         if path == "/api/chat":
             self._handle_chat_stream()
             return
@@ -1068,7 +1194,7 @@ class RAGWebHandler(BaseHTTPRequestHandler):
         time.sleep(0.25)
         self._send_json({"error": "API Key 不正确。"}, status=401)
 
-    def _handle_chat_stream(self) -> None:
+    def _handle_rewrite_question(self) -> None:
         try:
             payload = self._read_json()
         except Exception as exc:
@@ -1081,6 +1207,41 @@ class RAGWebHandler(BaseHTTPRequestHandler):
             self._send_error_json("问题不能为空。", status=400)
             return
 
+        history: list[dict[str, Any]] = []
+        if conversation_id:
+            conversation = self.store.get_conversation(str(conversation_id))
+            if conversation:
+                history = list(conversation.get("messages", []))
+
+        try:
+            self._send_json(rewrite_question_for_retrieval(question, history=history))
+        except Exception as exc:
+            self._send_json(
+                {
+                    "question": question,
+                    "rewritten_question": question,
+                    "changed": False,
+                    "rationale": "",
+                    "warning": f"问题改写失败，已保留原问题：{exc}",
+                }
+            )
+
+    def _handle_chat_stream(self) -> None:
+        try:
+            payload = self._read_json()
+        except Exception as exc:
+            self._send_error_json(f"请求 JSON 无效：{exc}", status=400)
+            return
+
+        question = str(payload.get("question", "")).strip()
+        retrieval_question = str(payload.get("retrieval_question") or question).strip()
+        conversation_id = payload.get("conversation_id") or None
+        if not question:
+            self._send_error_json("问题不能为空。", status=400)
+            return
+        if not retrieval_question:
+            retrieval_question = question
+
         self._send_stream_headers()
 
         conversation = self.store.append_message(conversation_id, "user", question)
@@ -1091,8 +1252,8 @@ class RAGWebHandler(BaseHTTPRequestHandler):
             self._write_stream_event({"type": "status", "message": "正在加载检索管线..."})
             pipeline = self.pipeline_manager.get()
 
-            self._write_stream_event({"type": "status", "message": "正在检索相关文本和图片..."})
-            txt_results, img_results = pipeline.query(question=question, k=200)
+            self._write_stream_event({"type": "status", "message": "正在用确认后的问题检索相关文本和图片..."})
+            txt_results, img_results = pipeline.query(question=retrieval_question, k=200)
 
             self._write_stream_event(
                 {
@@ -1107,6 +1268,7 @@ class RAGWebHandler(BaseHTTPRequestHandler):
                 txt_results,
                 img_results,
                 history=prior_messages,
+                retrieval_question=retrieval_question,
             ):
                 answer_parts.append(content)
                 self._write_stream_event({"type": "chunk", "content": content})
@@ -1383,11 +1545,37 @@ def interactive_menu() -> None:
             if not question:
                 continue
 
+            retrieval_question = question
+            try:
+                rewrite = rewrite_question_for_retrieval(question, history=history)
+                suggested_question = str(rewrite.get("rewritten_question") or question).strip() or question
+                print("\n建议用于检索的问题：")
+                print(suggested_question)
+                confirm = input("\n使用该问题检索？(Y=确认 / n=使用原问题 / e=编辑 / c=取消): ").strip().lower()
+                if confirm == "c":
+                    print("已取消本次查询。\n")
+                    continue
+                if confirm == "e":
+                    edited = input("请输入确认后的检索问题: ").strip()
+                    retrieval_question = edited or suggested_question
+                elif confirm == "n":
+                    retrieval_question = question
+                else:
+                    retrieval_question = suggested_question
+            except Exception as exc:
+                print(f"问题改写失败，使用原问题继续：{exc}")
+
             print("\n正在检索相关文档和图片...")
-            txt_results, img_results = pipeline.query(question=question, k=200)
+            txt_results, img_results = pipeline.query(question=retrieval_question, k=200)
             print(f"检索到 {len(txt_results)} 条相关文本，{len(img_results)} 张相关图片。")
 
-            answer = pipeline.ask_llm(question, txt_results, img_results, history=history)
+            answer = pipeline.ask_llm(
+                question,
+                txt_results,
+                img_results,
+                history=history,
+                retrieval_question=retrieval_question,
+            )
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": answer})
 
